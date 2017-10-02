@@ -23,6 +23,7 @@ class DDPGAgent:
         self.action_size = 3
         self.state_size = 29
 
+        # build networks
         self.actor, self.actor_weight = self.build_actor()
         self.actor_target, self.actor_target_weight = self.build_actor()
         self.critic, self.critic_state, self.critic_action = self.build_critic()
@@ -58,20 +59,6 @@ class DDPGAgent:
         actor = Model(inputs=input, outputs=action)
         return actor, actor.trainable_weights
 
-    '''
-    def actor_optimizer(self):
-        self.action_grads = K.placeholder(shape=[None, self.action_size])
-        # loss = -self.actor.output * action_grads
-        params_grad = tf.gradients(self.actor.output, self.actor_weight,
-                                   -self.action_grads)
-        grads = zip(params_grad, self.actor_weight)
-        self.optimize = tf.train.AdamOptimizer(0.0001).apply_gradients(grads)
-        # optimizer = Adam(lr=0.0001)
-        # updates = optimizer.get_updates(self.actor_weight, [], loss)
-        # train = K.function([self.actor.input, action_grads], [], updates=updates)
-        # return train
-    '''
-
     def update_actor(self, states, gradient):
         self.sess.run(self.optimize, feed_dict={
             self.actor.input: states,
@@ -97,16 +84,18 @@ class DDPGAgent:
         self.epsilon -= self.epsilon_decay
         noise = np.zeros([self.action_size])
         action = self.actor.predict(state)[0]
+        # add noise to the actor's output,(OU noise)
         noise[0] = max(self.epsilon, 0) * ou_noise(action[0], 0.0, 0.60, 0.30)
         noise[1] = max(self.epsilon, 0) * ou_noise(action[1], 0.5, 1.00, 0.10)
         noise[2] = max(self.epsilon, 0) * ou_noise(action[2], -0.1, 1.00, 0.05)
         real = action + noise
         return real
 
-    def save_sample(self, state, action, reward, next_state, done):
+    def append_sample(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done))
 
     def train_model(self):
+        # make minibatch from replay memory
         mini_batch = random.sample(self.memory, self.batch_size)
 
         states = np.asarray([e[0] for e in mini_batch])
@@ -115,6 +104,7 @@ class DDPGAgent:
         next_states = np.asarray([e[3] for e in mini_batch])
         dones = np.asarray([e[4] for e in mini_batch])
 
+        # update critic network
         target_q_values = self.critic_target.predict(
             [next_states, self.actor_target.predict(next_states)])
 
@@ -128,6 +118,7 @@ class DDPGAgent:
         loss = 0
         loss += self.critic.train_on_batch([states, actions], targets)
 
+        # update actor network
         a_for_grad = self.actor.predict(states)
 
         action_grads = tf.gradients(self.critic.output, self.critic_action)
@@ -135,6 +126,7 @@ class DDPGAgent:
             self.critic_state: states, self.critic_action: a_for_grad})[0]
         self.update_actor(states, grads)
 
+        # soft update of target networks(actor, critic)
         actor_weights = self.actor.get_weights()
         actor_target_weights = self.actor_target.get_weights()
         for i in range(len(actor_weights)):
@@ -161,7 +153,7 @@ global_step = 0
 for e in range(2000):
     step = 0
     score = 0
-    if e % 10 == 0:
+    if e % 5 == 0:
         observe = env.reset(relaunch=True)
         print("Now we save model")
         agent.actor.save_weights("ddpg_actor.h5", overwrite=True)
@@ -169,6 +161,7 @@ for e in range(2000):
     else:
         observe = env.reset()
 
+    # get necessary information from the observation
     state = np.hstack((observe.angle, observe.track, observe.trackPos,
                        observe.speedX, observe.speedY, observe.speedZ,
                        observe.wheelSpinVel / 100.0, observe.rpm))
@@ -184,7 +177,7 @@ for e in range(2000):
                                 observe.speedX, observe.speedY, observe.speedZ,
                                 observe.wheelSpinVel / 100.0, observe.rpm))
 
-        agent.save_sample(state, action, reward, next_state, done)
+        agent.append_sample(state, action, reward, next_state, done)
 
         if global_step > 1000:
             agent.train_model()
